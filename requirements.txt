@@ -1,0 +1,10 @@
+torch
+torchvision
+surgeon_pytorch
+numpy
+scipy
+matplotlib
+scikit-learn
+safetensors
+tqdm
+opencv-python
