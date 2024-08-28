@@ -150,7 +150,7 @@ def get_patches_in_cluster(
                 # Compute Euclidean distance and invert it
                 distances = euclidean_distance(
                     active_key, other_cluster_keys.view(-1, 64)
-                )  # TODO change back to 768
+                ) 
                 mean_distance = distances.mean().item()
                 cos_sim_means.append(mean_distance)
 

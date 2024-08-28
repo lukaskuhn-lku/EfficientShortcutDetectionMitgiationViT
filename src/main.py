@@ -1,9 +1,7 @@
-import cv2
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
-import re
 
 import torch
 import torch.nn as nn
@@ -16,18 +14,12 @@ from torchvision import datasets, transforms
 
 from tqdm import tqdm
 import numpy as np
-from surgeon_pytorch import Inspect, get_nodes, get_layers, Extract
+from surgeon_pytorch import Extract
 import os
-import gc
 
-from safetensors import safe_open
-from safetensors.torch import save_file
-
-from sklearn.decomposition import PCA
-import time
-
-from src.utils.models.vit_last_block import ViTLastBlock
-from src.utils.utils import (
+from utils.captioning import caption_images, summarize_cluster
+from utils.models.vit_last_block import ViTLastBlock
+from utils.utils import (
     extract_number,
     get_n_closest_points,
     load_safetensor,
@@ -37,13 +29,13 @@ from utils.inference import inference_for_loader
 from utils.patches import get_patches_in_cluster, reverse_transform
 from utils.surgeon import get_predictions
 from utils.reciprocam import reciprocam
+from utils.clustering import compute_pca, knn, select_cluster
 
-from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 
 import pandas as pd
 import replicate
+from utils.visualization import save_patches
 
 
 def main():
@@ -110,7 +102,6 @@ def main():
 
     # Extract the dimensions
     embed_dim = 768
-    kdim = self_attention_layer.kdim
 
     # Extract the weight matrix for the keys (Wk) from the combined weight matrix
     W_K = self_attention_layer.in_proj_weight[embed_dim : 2 * embed_dim, :]
@@ -164,85 +155,11 @@ def main():
     ]
     target_labels = torch.cat([target["targets"] for target in targets], dim=0)
 
-    # PCA
-    if (
-        os.path.exists(f"outputs/{MODEL_NAME}/pca_results.safetensors")
-        and os.path.exists(f"outputs/{MODEL_NAME}/pca_3d_results.safetensors")
-        and os.path.exists(f"outputs/{MODEL_NAME}_{SEED}/tsne_3d_results.safetensors")
-    ):
-        pca_results = load_safetensor(f"outputs/{MODEL_NAME}/pca_results.safetensors")
-        pca_3d_results = load_safetensor(
-            f"outputs/{MODEL_NAME}/pca_3d_results.safetensors"
-        )
-        tsne_results = load_safetensor(
-            f"outputs/{MODEL_NAME}/tsne_3d_results.safetensors"
-        )
+    pca_path = compute_pca(all_activations, MODEL_NAME)
+    pca_results = load_safetensor(pca_path)
 
-        print("PCA and TSNE results already exist. Skipping...")
-    else:
-        pca_results = {}
-        pca_3d_results = {}
-        tsne_3d_results = {}
-
-        layer_names = list(all_activations.keys())
-
-        for layer_name in layer_names:
-            # fit PCA on the original activations
-            pca = PCA(n_components=50)
-            pca_3d = PCA(n_components=3)
-            pca_results[layer_name] = pca.fit_transform(
-                all_activations[layer_name].numpy()
-            )
-            pca_3d_results[layer_name] = pca_3d.fit_transform(
-                all_activations[layer_name].numpy()
-            )
-            tsne_3d_results[layer_name] = TSNE(n_components=3).fit_transform(
-                all_activations[layer_name].numpy()
-            )
-
-        # save the pca results
-        # convert the pca results to safetensors
-        pca_3d_results = {
-            layer_name: torch.tensor(pca_result)
-            for layer_name, pca_result in pca_3d_results.items()
-        }
-        tsne_results = {
-            layer_name: torch.tensor(tsne_results)
-            for layer_name, tsne_results in tsne_3d_results.items()
-        }
-        pca_results = {
-            layer_name: torch.tensor(pca_result)
-            for layer_name, pca_result in pca_results.items()
-        }
-
-        save_file(pca_3d_results, f"outputs/{MODEL_NAME}/pca_3d_results.safetensors")
-        save_file(tsne_results, f"outputs/{MODEL_NAME}/tsne_3d_results.safetensors")
-        save_file(pca_results, f"outputs/{MODEL_NAME}/pca_results.safetensors")
-
-    MAX_CLUSTERS = 10
-    optimal_clusters = {}
-    kmeans_results = {}
-    cluster_to_take = pca_results
-
-    for layer_name in layer_names:
-        silhouette_scores = []
-        for n_clusters in range(NUM_CLASSES + 1, MAX_CLUSTERS + 1):
-            kmeans = KMeans(n_clusters=n_clusters, random_state=SEED)
-            kmeans.fit(cluster_to_take[layer_name])
-            score = silhouette_score(cluster_to_take[layer_name], kmeans.labels_)
-            silhouette_scores.append((n_clusters, score))
-
-        # Find the number of clusters with the highest silhouette score
-        optimal_n_clusters = max(silhouette_scores, key=lambda x: x[1])[0]
-        optimal_clusters[layer_name] = optimal_n_clusters
-
-        # Fit KMeans with the optimal number of clusters
-        kmeans = KMeans(n_clusters=optimal_n_clusters, random_state=SEED)
-        kmeans.fit(cluster_to_take[layer_name])
-        kmeans_results[layer_name] = kmeans.labels_
-
-    n_cluster = optimal_clusters["encoder.layers.encoder_layer_11"]
-    print(f"Optimal number of clusters: {n_cluster}")
+    selected_layer = "encoder.layers.encoder_layer_11"
+    kmeans_results, n_cluster = knn(pca_results, selected_layer, NUM_CLASSES)
 
     logits = [
         load_safetensor(prediction_result[2])
@@ -250,83 +167,9 @@ def main():
     ]
     probabilities = [F.softmax(logit["logits"], dim=-1) for logit in logits]
 
-    selected_layer = "encoder.layers.encoder_layer_11"
+    cluster_ids = select_cluster(n_cluster, kmeans_results, selected_layer, probabilities, target_labels)
 
-    scores = []
-
-    for cluster_idx in range(n_cluster):
-        cluster_indices = torch.where(
-            torch.tensor(kmeans_results[selected_layer]) == cluster_idx
-        )[0]
-        cluster_probabilities = probabilities[0][cluster_indices]
-        cluster_targets = target_labels[cluster_indices]
-
-        # count the number of 1 and 0s in the target labels
-        n_ones = torch.sum(cluster_targets)
-        n_zeros = len(cluster_targets) - n_ones
-
-        dominant = 0 if n_zeros > n_ones else 1
-        non_dominant = 1 - dominant
-
-        cluster_probabilities_where_dominant = cluster_probabilities[
-            cluster_targets == dominant
-        ]
-        cluster_probabilities_where_non_dominant = cluster_probabilities[
-            cluster_targets == non_dominant
-        ]
-
-        # calculate brier score for the dominant class
-        brier_score_dominant = torch.mean(
-            (cluster_probabilities_where_dominant[:, dominant] - 1) ** 2
-        )
-        brier_score_non_dominant = torch.mean(
-            cluster_probabilities_where_non_dominant[:, dominant] ** 2
-        )
-
-        heterogeneity_score = (
-            n_zeros / len(cluster_indices)
-            if n_zeros > n_ones
-            else n_ones / len(cluster_indices)
-        )
-
-        print(f"Cluster {cluster_idx}")
-        print(f"Brier Score Dominant: {np.exp(-brier_score_dominant.item())}")
-        print(f"Brier Score Non-Dominant: {1-np.exp(-brier_score_non_dominant.item())}")
-        print(f"Heterogeneity Score: {heterogeneity_score}")
-
-        brier_score_non_dominant = (
-            brier_score_non_dominant
-            if brier_score_non_dominant > 0
-            else torch.tensor(0)
-        )
-
-        scores.append(
-            {
-                "cluster_idx": cluster_idx,
-                "brier_score_dominant": np.exp(-brier_score_dominant.item()),
-                "brier_score_non_dominant": 1
-                - np.exp(-brier_score_non_dominant.item()),
-                "n_samples": len(cluster_indices),
-                "heterogenity_score": heterogeneity_score.item(),
-                "n_zeros": n_zeros.item(),
-                "n_ones": n_ones.item(),
-            }
-        )
-
-    df = pd.DataFrame(scores)
-
-    df["total_score"] = (
-        df["brier_score_dominant"]
-        + df["brier_score_non_dominant"]
-        + df["heterogenity_score"]
-    )
-
-    cluster_ids = df["total_score"].nlargest(n_clusters).index
-
-    print(df.head())
-
-    # Example usage
-    n = 10  # Number of most distant points to retrieve
+    n = 10 # Number of closest points to extract
     n_closest_points_indices = get_n_closest_points(
         pca_results=pca_results,
         kmeans_results=kmeans_results,
@@ -350,105 +193,22 @@ def main():
         )
     )
 
-    patch_files = []
+    patch_files = save_patches(n_cluster, all_patches, all_overlays, all_image_indices, concatenated_dataset, MODEL_NAME, reverse_transform)
 
-    for cluster in range(n_cluster):
-        os.makedirs(f"outputs/{MODEL_NAME}/patches/{cluster}", exist_ok=True)
 
-        patch_f = []
-
-        for idx, patch in enumerate(all_patches[cluster]):
-            # save image
-            plt.imshow(patch)
-            plt.axis("off")
-            plt.savefig(
-                f"outputs/{MODEL_NAME}/patches/{cluster}/{idx}.png",
-                bbox_inches="tight",
-                pad_inches=0,
-            )
-            patch_f.append(f"outputs/{MODEL_NAME}/patches/{cluster}/{idx}.png")
-
-        os.makedirs(f"outputs/{MODEL_NAME}/overlays/{cluster}", exist_ok=True)
-
-        for idx, patch in enumerate(all_overlays[cluster]):
-            # save image
-            plt.imshow(patch)
-            plt.axis("off")
-            plt.savefig(
-                f"outputs/{MODEL_NAME}/overlays/{cluster}/{idx}.png",
-                bbox_inches="tight",
-                pad_inches=0,
-            )
-
-        patch_files.append(patch_f)
-
-        for idx, orig_idx in enumerate(all_image_indices[cluster]):
-            # save image
-            plt.imshow(reverse_transform(concatenated_dataset[orig_idx][0]))
-            plt.axis("off")
-            plt.savefig(
-                f"outputs/{MODEL_NAME}/overlays/{cluster}/{idx}_original.png",
-                bbox_inches="tight",
-                pad_inches=0,
-            )
-
-    os.environ["REPLICATE_API_TOKEN"] = ""
-    api = replicate.Client(api_token=os.environ["REPLICATE_API_TOKEN"])
-
-    caption_models = [
-        (
+    caption_model = (
             "yorickvp/llava-13b:b5f6212d032508382d61ff00469ddda3e32fd8a0e75dc39d8a4191bb742157fb",
             "llava-13b",
-        )
-    ]
+    )
 
-    for cap_mod in caption_models:
-        cluster_descriptions = []
+    replicate_api = replicate.Client(api_token=os.environ["REPLICATE_API_TOKEN"])
+    cluster_descriptions = caption_images(replicate_api, caption_model, patch_files, n_cluster, MODEL_NAME)
 
-        for cluster in range(n_cluster):
-            descriptions = []
-            for idx, image in tqdm(enumerate(patch_files[cluster])):
-                output = api.run(
-                    cap_mod[0],
-                    input={
-                        "image": open(image, "rb"),
-                        "prompt": "What is in this picture? Describe in a few words.",
-                    },
-                )
-                descriptions.append("".join(output))
-
-            cluster_descriptions.append(descriptions)
-
-            os.makedirs(
-                f"outputs/{MODEL_NAME}_{SEED}/descriptions/{cluster}", exist_ok=True
-            )
-            # write descriptions to file
-            with open(
-                f"outputs/{MODEL_NAME}_{SEED}/descriptions/{cluster}/{cap_mod[1]}_descriptions.txt",
-                "w",
-            ) as f:
-                f.write("\n".join(descriptions))
-
-    for cluster in range(n_cluster):
-        input = {
-            "prompt": f"I extracted patches from images in my dataset where my model seems to focus on the most. I let an LLM caption these images for you. I am searching for potential shortcuts in the dataset. Can you identify one or more possible shortcuts in this dataset? Describe it in one sentence (only!) and pick the most significant. No other explanations are needed. If there isn't any shortcut obvious to you then just say so. Descriptions: \n"
-            + "".join(cluster_descriptions[cluster]),
-            "prompt_template": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-        }
-
-        output = api.run("meta/meta-llama-3-70b-instruct", input=input)
-
-        text = "".join(output)
-
-        with open(
-            f"outputs/{MODEL_NAME}_{SEED}/descriptions/{cluster}/llama70b_shortcut.txt",
-            "w",
-        ) as f:
-            f.write(text)
+    # summarizes the cluster via LLM and outputs the results to a file
+    summarize_cluster(replicate_api, cluster_descriptions, MODEL_NAME)
 
     top_indices = all_top_indices[cluster_ids.values[0]]
     image_indices = all_image_indices[cluster_ids.values[0]]
-    patches = all_patches[cluster_ids.values[0]]
 
     combined_keys = []
 
@@ -457,12 +217,8 @@ def main():
             key_idx = coord[0] * 14 + coord[1]
             combined_keys.append(keys[image][key_idx])
 
-    combined_keys = np.array(combined_keys)
-    combined_keys = combined_keys.reshape(n * 10, -1)
+    combined_keys = np.array(combined_keys).reshape(n * 10, -1)
     combined_keys = combined_keys / np.linalg.norm(combined_keys, axis=1)[:, np.newaxis]
-
-    mean_ds = [0.485, 0.456, 0.406]
-    std_ds = [0.229, 0.224, 0.225]
 
     # Define the transformations to apply to the images
     transform = transforms.Compose(
@@ -479,10 +235,6 @@ def main():
     )
     test_dataset_w_patches = datasets.ImageFolder(
         root="./data/isic/test_w_patches/", transform=transform
-    )
-
-    test_concatenated_dataset = ConcatDataset(
-        [test_dataset_wo_patches, test_dataset_w_patches]
     )
 
     patches_malignant = load_subset_by_target(test_dataset_w_patches, 1)
