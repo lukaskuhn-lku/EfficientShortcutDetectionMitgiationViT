@@ -1,7 +1,16 @@
 import os
 import matplotlib.pyplot as plt
 
-def save_patches(n_cluster, all_patches, all_overlays, all_image_indices, concatenated_dataset, model_name, reverse_transform):
+
+def save_patches(
+    n_cluster,
+    all_patches,
+    all_overlays,
+    all_image_indices,
+    concatenated_dataset,
+    model_name,
+    reverse_transform,
+):
     patch_files = []
 
     for cluster in range(n_cluster):

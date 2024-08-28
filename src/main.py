@@ -167,9 +167,11 @@ def main():
     ]
     probabilities = [F.softmax(logit["logits"], dim=-1) for logit in logits]
 
-    cluster_ids = select_cluster(n_cluster, kmeans_results, selected_layer, probabilities, target_labels)
+    cluster_ids = select_cluster(
+        n_cluster, kmeans_results, selected_layer, probabilities, target_labels
+    )
 
-    n = 10 # Number of closest points to extract
+    n = 10  # Number of closest points to extract
     n_closest_points_indices = get_n_closest_points(
         pca_results=pca_results,
         kmeans_results=kmeans_results,
@@ -193,16 +195,25 @@ def main():
         )
     )
 
-    patch_files = save_patches(n_cluster, all_patches, all_overlays, all_image_indices, concatenated_dataset, MODEL_NAME, reverse_transform)
-
+    patch_files = save_patches(
+        n_cluster,
+        all_patches,
+        all_overlays,
+        all_image_indices,
+        concatenated_dataset,
+        MODEL_NAME,
+        reverse_transform,
+    )
 
     caption_model = (
-            "yorickvp/llava-13b:b5f6212d032508382d61ff00469ddda3e32fd8a0e75dc39d8a4191bb742157fb",
-            "llava-13b",
+        "yorickvp/llava-13b:b5f6212d032508382d61ff00469ddda3e32fd8a0e75dc39d8a4191bb742157fb",
+        "llava-13b",
     )
 
     replicate_api = replicate.Client(api_token=os.environ["REPLICATE_API_TOKEN"])
-    cluster_descriptions = caption_images(replicate_api, caption_model, patch_files, n_cluster, MODEL_NAME)
+    cluster_descriptions = caption_images(
+        replicate_api, caption_model, patch_files, n_cluster, MODEL_NAME
+    )
 
     # summarizes the cluster via LLM and outputs the results to a file
     summarize_cluster(replicate_api, cluster_descriptions, MODEL_NAME)
@@ -259,8 +270,6 @@ def main():
         correct_mal_w_patch,
         correct_ab_mal_w_patch,
         total_mal_w_patch,
-        _,
-        _,
     ) = inference_for_loader(
         patches_malignant_loader, model, W_K, combined_keys, device
     )
@@ -269,8 +278,6 @@ def main():
         correct_ben_w_patch,
         correct_ab_ben_w_patch,
         total_ben_w_patch,
-        _,
-        _,
     ) = inference_for_loader(patches_benign_loader, model, W_K, combined_keys, device)
     print(correct_ben_w_patch, correct_ab_ben_w_patch, total_ben_w_patch)
 
@@ -278,8 +285,6 @@ def main():
         correct_mal_wo_patch,
         correct_ab_mal_wo_patch,
         total_mal_wo_patch,
-        _,
-        _,
     ) = inference_for_loader(
         no_patches_malignant_loader, model, W_K, combined_keys, device
     )
@@ -288,8 +293,6 @@ def main():
         correct_ben_wo_patch,
         correct_ab_ben_wo_patch,
         total_ben_wo_patch,
-        _,
-        _,
     ) = inference_for_loader(
         no_patches_benign_loader, model, W_K, combined_keys, device
     )

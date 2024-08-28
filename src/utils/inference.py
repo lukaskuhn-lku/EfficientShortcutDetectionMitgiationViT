@@ -71,4 +71,4 @@ def inference_for_loader(loader, model, W_K, combined_keys, device="cpu"):
 
         total += 1
 
-    return correct, correct_abilation, total, correct_images, ablated
+    return correct, correct_abilation, total

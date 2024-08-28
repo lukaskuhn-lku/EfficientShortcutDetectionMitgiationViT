@@ -1,6 +1,6 @@
-   
 from tqdm import tqdm
 import os
+
 
 def caption_images(api, cap_mod, patch_files, n_cluster, model_name):
     cluster_descriptions = []
@@ -19,16 +19,15 @@ def caption_images(api, cap_mod, patch_files, n_cluster, model_name):
 
         cluster_descriptions.append(descriptions)
 
-        os.makedirs(
-            f"outputs/{model_name}/descriptions/{cluster}", exist_ok=True
-        )
+        os.makedirs(f"outputs/{model_name}/descriptions/{cluster}", exist_ok=True)
         # write descriptions to file
         with open(
             f"outputs/{model_name}/descriptions/{cluster}/{cap_mod[1]}_descriptions.txt",
             "w",
         ) as f:
             f.write("\n".join(descriptions))
-            
+
+
 def summarize_cluster(replicate_api, cluster_descriptions, MODEL_NAME):
     for cluster in range(len(cluster_descriptions)):
         input = {

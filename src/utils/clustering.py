@@ -11,6 +11,7 @@ import pandas as pd
 
 import os
 
+
 def compute_pca(all_activations, model_name):
     if os.path.exists(f"outputs/{model_name}/pca_results.safetensors"):
         pca_results = load_safetensor(f"outputs/{model_name}/pca_results.safetensors")
@@ -39,6 +40,7 @@ def compute_pca(all_activations, model_name):
 
     return f"outputs/{model_name}/pca_results.safetensors"
 
+
 def knn(pca_results, selected_layer, num_classes, seed=1):
     MAX_CLUSTERS = 10
     optimal_clusters = {}
@@ -64,7 +66,10 @@ def knn(pca_results, selected_layer, num_classes, seed=1):
 
     return kmeans_results, n_cluster
 
-def select_cluster(n_cluster, kmeans_results, selected_layer, probabilities, target_labels):
+
+def select_cluster(
+    n_cluster, kmeans_results, selected_layer, probabilities, target_labels
+):
     scores = []
 
     for cluster_idx in range(n_cluster):
